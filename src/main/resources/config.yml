@@ -1,0 +1,5 @@
+# ChunkCooker configuration
+#
+chunks-per-period: 100
+seconds-per-period: 30
+storm-on-empty-world: true

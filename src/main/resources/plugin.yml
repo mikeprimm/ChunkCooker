@@ -1,0 +1,5 @@
+name: ChunkCooker
+main: com.mikeprimm.bukkit.ChunkCooker.ChunkCooker
+version: "${project.version}"
+author: mikeprimm
+
