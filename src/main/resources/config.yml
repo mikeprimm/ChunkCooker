@@ -3,3 +3,4 @@
 chunks-per-period: 100
 seconds-per-period: 30
 storm-on-empty-world: true
+chunk-tick-interval: 1

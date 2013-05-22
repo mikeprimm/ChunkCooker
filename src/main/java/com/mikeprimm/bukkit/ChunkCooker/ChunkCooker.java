@@ -4,12 +4,15 @@ package com.mikeprimm.bukkit.ChunkCooker;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.logging.Logger;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
+import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -27,6 +30,7 @@ public class ChunkCooker extends JavaPlugin {
     private int cooker_period = 30; // 30 seconds
     private int chunks_per_period = 100;
     private boolean storm_on_empty = true;
+    private int chunk_tick_interval = 1; // Every tick
     
     private int worldIndex = 0;
     private World currentWorld = null;
@@ -115,6 +119,23 @@ public class ChunkCooker extends JavaPlugin {
         log.info(loadedChunks.size() + " chunks loaded for cooking");
     }
     
+    private void tickChunks() {
+        
+    }
+    
+    private String getNMSPackage() {
+        Server srv = Bukkit.getServer();
+        /* Get getHandle() method */
+        try {
+            Method m = srv.getClass().getMethod("getHandle");
+            Object scm = m.invoke(srv); /* And use it to get SCM (nms object) */
+            return scm.getClass().getPackage().getName();
+        } catch (Exception x) {
+            log.severe("Error finding net.minecraft.server packages");
+            return null;
+        }
+    }
+
     /* On disable, stop doing our function */
     public void onDisable() {
         
@@ -134,12 +155,21 @@ public class ChunkCooker extends JavaPlugin {
         cooker_period = cfg.getInt("seconds-per-period", 30);
         if(cooker_period < 5) cooker_period = 5;
         storm_on_empty = cfg.getBoolean("storm-on-empty-world", true);
+        chunk_tick_interval = cfg.getInt("chunk-tick-interval", 1);
 
         this.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
             public void run() {
                 tickCooker();
             }
         }, cooker_period * 20, cooker_period * 20);
+
+        if (chunk_tick_interval > 0) {
+            this.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
+                public void run() {
+                    tickChunks();
+                }
+            }, chunk_tick_interval, chunk_tick_interval);
+        }
         
         Listener pl = new Listener() {
             @EventHandler(priority=EventPriority.NORMAL)
