@@ -4,10 +4,14 @@ package com.mikeprimm.bukkit.ChunkCooker;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.bukkit.Bukkit;
@@ -31,13 +35,20 @@ public class ChunkCooker extends JavaPlugin {
     private int chunks_per_period = 100;
     private boolean storm_on_empty = true;
     private int chunk_tick_interval = 1; // Every tick
+    private boolean verbose = false;
     
     private int worldIndex = 0;
     private World currentWorld = null;
     private HashSet<TileFlags.TileCoord> loadedChunks = new HashSet<TileFlags.TileCoord>();
+    private ArrayList<TileFlags.TileCoord> tickingChunks = new ArrayList<TileFlags.TileCoord>();
     private TileFlags chunkmap = new TileFlags();
     private TileFlags.Iterator iter;
     private boolean stormset;
+    
+    private Field chunkTickList;
+    private Method chunkTickListPut;
+    private Method cw_gethandle;
+    private boolean isSpigotStyleChunkTickList;
     
     private void tickCooker() {
         // If any chunks loaded from last tick, unload them
@@ -50,6 +61,7 @@ public class ChunkCooker extends JavaPlugin {
                 }
             }
         }
+        tickingChunks.clear();
         // If iterator is exhausted, done with current world
         if ((iter != null) && (iter.hasNext() == false)) {
             iter = null;
@@ -98,6 +110,12 @@ public class ChunkCooker extends JavaPlugin {
                             loadedChunks.add(new TileFlags.TileCoord(tc.x, tc.y));
                         }
                     }
+                    // If ticking, and this is the chunk we're processing, and its loaded, tick it
+                    if ((chunk_tick_interval > 0) && (tc.x == x0) && (tc.y == z0)) {
+                        if (loadedChunks.contains(tc)) {
+                            tickingChunks.add(new TileFlags.TileCoord(tc.x, tc.y));
+                        }
+                    }
                 }
             }
         }
@@ -106,7 +124,7 @@ public class ChunkCooker extends JavaPlugin {
                 if (currentWorld.hasStorm() == false) {
                     currentWorld.setStorm(true);
                     stormset = true;
-                    log.info("Setting storm on empty world '" + currentWorld.getName() + "'");
+                    log.fine("Setting storm on empty world '" + currentWorld.getName() + "'");
                 }
             }
             else {
@@ -116,11 +134,11 @@ public class ChunkCooker extends JavaPlugin {
                 }
             }
         }
-        log.info(loadedChunks.size() + " chunks loaded for cooking");
+        log.fine(loadedChunks.size() + " chunks loaded for cooking");
     }
     
     private void tickChunks() {
-        
+        putChunkTickList();
     }
     
     private String getNMSPackage() {
@@ -133,6 +151,96 @@ public class ChunkCooker extends JavaPlugin {
         } catch (Exception x) {
             log.severe("Error finding net.minecraft.server packages");
             return null;
+        }
+    }
+
+    private void findChunkTickListFields() {
+        String nms = this.getNMSPackage();
+        String obc = Bukkit.getServer().getClass().getPackage().getName();
+        boolean good = false;
+        Exception x = null;
+        try {
+            Class<?> craftworld = Class.forName(obc + ".CraftWorld");
+            cw_gethandle = craftworld.getMethod("getHandle", new Class[0]);
+            
+            Class<?> cls = Class.forName(nms + ".World");
+            chunkTickList = cls.getDeclaredField("chunkTickList");
+            if (chunkTickList == null) {
+                log.info("Cannot find chunkTickList: cannot tick chunks");
+                chunk_tick_interval = 0;
+                return;
+            }
+            chunkTickList.setAccessible(true);
+            // If LongHashSet, its bukkit style
+            Class<?> ctlclass = chunkTickList.getType();
+            String clsname = ctlclass.getName();
+            if (clsname.endsWith("LongHashSet")) {
+                chunkTickListPut = ctlclass.getMethod("add", new Class[] { long.class });
+                good = true;
+            }
+            else if (clsname.endsWith("TLongShortHashMap")) {
+                isSpigotStyleChunkTickList = true;
+                chunkTickListPut = ctlclass.getMethod("put", new Class[] { long.class, short.class });
+                good = true;
+            }
+        } catch (ClassNotFoundException e) {
+            x = e;
+        } catch (SecurityException e) {
+            x = e;
+        } catch (NoSuchFieldException e) {
+            x = e;
+        } catch (NoSuchMethodException e) {
+            x = e;
+        } finally {
+            if (!good) {
+                if (x != null)
+                    log.log(Level.INFO, "Cannot find chunkTickList: cannot tick chunks", x);
+                else
+                    log.info("Cannot find chunkTickList: cannot tick chunks");
+                chunk_tick_interval = 0;
+                chunkTickList = null;
+            }
+        }
+    }
+    private void putChunkTickList() {
+        Exception xx = null;
+        int cnt = 0;
+        try {
+            if ((chunkTickList != null) && (currentWorld != null)) {
+                Object w = cw_gethandle.invoke(currentWorld);
+                Object lst = chunkTickList.get(w);
+                if (lst != null) {
+                    for (TileFlags.TileCoord tc : tickingChunks) {
+                        int x = tc.x;
+                        int z = tc.y;
+                        if (isSpigotStyleChunkTickList) {
+                            Long k = ((((long)x) & 0xFFFF0000L) << 16) | ((((long)x) & 0x0000FFFFL) << 0);
+                            k |= ((((long)z) & 0xFFFF0000L) << 32) | ((((long)z) & 0x0000FFFFL) << 16);
+                            chunkTickListPut.invoke(lst, k, Short.valueOf((short)-1));
+                            cnt++;
+                        }
+                        else {
+                            Long v = ((long) x << 32) + z - Integer.MIN_VALUE;
+                            chunkTickListPut.invoke(lst, v);
+                            cnt++;
+                        }
+                    }
+                }
+                else {
+                    log.info("No chunkTickQueue");
+                    chunkTickList = null;
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            xx = e;
+        } catch (IllegalAccessException e) {
+            xx = e;
+        } catch (InvocationTargetException e) {
+            xx = e;
+        }
+        if (xx != null) {
+            log.log(Level.INFO,  "Cannot send ticks", xx);
+            chunkTickList = null;
         }
     }
 
@@ -156,7 +264,14 @@ public class ChunkCooker extends JavaPlugin {
         if(cooker_period < 5) cooker_period = 5;
         storm_on_empty = cfg.getBoolean("storm-on-empty-world", true);
         chunk_tick_interval = cfg.getInt("chunk-tick-interval", 1);
-
+        verbose = cfg.getBoolean("verbose", false);
+        if (verbose)
+            log.setLevel(Level.FINE);
+        // See if we can tick chunk fields
+        if (chunk_tick_interval > 0) {
+            findChunkTickListFields();
+        }
+        
         this.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
             public void run() {
                 tickCooker();
