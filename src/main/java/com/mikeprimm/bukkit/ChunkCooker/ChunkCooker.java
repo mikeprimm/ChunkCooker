@@ -90,13 +90,15 @@ public class ChunkCooker extends JavaPlugin {
             }
             // Now, get current chunk map for world
             int ccnt = getChunkMap(currentWorld, chunkmap);
-            log.info("Starting cook pass for world '" + currentWorld.getName() + "' - " + ccnt + " existing chunks");
+            log.info("Starting cook pass for world '" + currentWorld.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
+                    (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0 + " hrs)");
             iter = chunkmap.getIterator();  // Get iterator
         }
         // Now, load next N chunks (and their neighbors)
         TileFlags.TileCoord tc = new TileFlags.TileCoord();
         while(iter.hasNext() && (loadedChunks.size() < chunks_per_period)) {
             iter.next(tc);
+            chunkmap.setFlag(tc.x,  tc.y, false);
             int x0 = tc.x;
             int z0 = tc.y;
             // Try to load chunk, and its 8 neighbors
@@ -124,7 +126,8 @@ public class ChunkCooker extends JavaPlugin {
                 if (currentWorld.hasStorm() == false) {
                     currentWorld.setStorm(true);
                     stormset = true;
-                    log.fine("Setting storm on empty world '" + currentWorld.getName() + "'");
+                    if(verbose)
+                        log.info("Setting storm on empty world '" + currentWorld.getName() + "'");
                 }
             }
             else {
@@ -134,7 +137,8 @@ public class ChunkCooker extends JavaPlugin {
                 }
             }
         }
-        log.fine(loadedChunks.size() + " chunks loaded for cooking");
+        if(verbose)
+            log.info(loadedChunks.size() + " chunks loaded for cooking (" + tickingChunks.size() + " ticking)");
     }
     
     private void tickChunks() {
