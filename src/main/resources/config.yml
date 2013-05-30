@@ -3,5 +3,13 @@
 chunks-per-period: 100
 seconds-per-period: 30
 storm-on-empty-world: true
+world-env: [ NORMAL ]
 chunk-tick-interval: 1
 verbose: false
+
+worlds:
+  SomeRandomWorld:
+    chunks-per-period: 100
+    seconds-per-period: 30
+    storm-on-empty-world: true
+     

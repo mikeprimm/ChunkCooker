@@ -10,8 +10,6 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -22,11 +20,13 @@ import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkUnloadEvent;
+import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -35,55 +35,81 @@ public class ChunkCooker extends JavaPlugin {
     
     private static final int COOKER_PERIOD_INC = 5; // 1/4 second
     
-    private int cooker_period = 30; // 30 seconds
-    private int chunks_per_period = 100;
-    private boolean storm_on_empty = true;
     private int chunk_tick_interval = 1; // Every tick
     private boolean verbose = false;
-    private int maxLoadsPerTick;
-    
-    private int worldIndex = 0;
-    private World currentWorld = null;
-    
+    private ArrayList<World.Environment> worldenv;
+        
     private static class UseCount {
         int cnt; // Number of ticking neighbors loaded
         boolean isTicking;
     }
-    private HashMap<TileFlags.TileCoord, UseCount> loadedChunks = new HashMap<TileFlags.TileCoord, UseCount>();
-    private TileFlags.TileCoord[][] tickingQueue;
-    private int tickingQueueIndex;
-    
-    private TileFlags chunkmap = new TileFlags();
-    private TileFlags.Iterator iter;
-    private boolean stormset;
     
     private Field chunkTickList;
     private Method chunkTickListPut;
     private Method cw_gethandle;
     private boolean isSpigotStyleChunkTickList;
     
-    private void tickCooker() {
-        TileFlags.TileCoord tc = new TileFlags.TileCoord();
-        // See if any chunks due to be unloaded
-        if (tickingQueue[tickingQueueIndex] != null) {
-            TileFlags.TileCoord[] chunkToUnload = tickingQueue[tickingQueueIndex];
-            tickingQueue[tickingQueueIndex] = null;
-            // Unload the ticking chunks
-            for (TileFlags.TileCoord c : chunkToUnload) {
-                UseCount cnt = loadedChunks.get(c);
-                if (cnt != null) {
-                    cnt.isTicking = false;
-                    // Now, decrement all loaded neighbors (and self)
-                    for (tc.x = c.x - 1; tc.x <= c.x + 1; tc.x++) {
-                        for (tc.y = c.y - 1; tc.y <= c.y + 1; tc.y++) {
-                            UseCount ncnt = loadedChunks.get(tc);
-                            if (ncnt != null) {
-                                ncnt.cnt--; // Drop neighbor count
-                                if ((ncnt.cnt == 0) && (ncnt.isTicking == false)) { // No neighbors nor ticking
-                                    loadedChunks.remove(tc); // Remove from set
-                                    // And unload it, if its not in use
-                                    if (currentWorld.isChunkInUse(tc.x, tc.y) == false) {
-                                        currentWorld.unloadChunkRequest(tc.x, tc.y);
+    private class WorldHandler {
+        private final World world;
+        private final int cooker_period; // 30 seconds
+        private final int chunks_per_period;
+        private final boolean storm_on_empty;
+        private final int maxLoadsPerTick;
+
+        private final HashMap<TileFlags.TileCoord, UseCount> loadedChunks = new HashMap<TileFlags.TileCoord, UseCount>();
+        private final TileFlags.TileCoord[][] tickingQueue;
+        private int tickingQueueIndex;
+        
+        private final TileFlags chunkmap = new TileFlags();
+        private TileFlags.Iterator iter;
+        private boolean stormset;
+
+        WorldHandler(FileConfiguration cfg, World w) {
+            world = w;
+            ConfigurationSection sec = cfg.getConfigurationSection(w.getName());
+            int cpp = cfg.getInt("chunks-per-period", 100);
+            int cp = cfg.getInt("seconds-per-period", 30);
+            boolean soe = cfg.getBoolean("storm-on-empty-world", true);
+            if (sec != null) {
+                cpp = sec.getInt("chunks-per-period", cpp);
+                cp = cfg.getInt("seconds-per-period", cp);
+                soe = cfg.getBoolean("storm-on-empty-world", soe);
+            }
+            chunks_per_period = cpp;
+            cooker_period = cp;
+            storm_on_empty = soe;
+            // Initialize chunk queue : enough buckets for giving chunks enough time
+            tickingQueue = new TileFlags.TileCoord[cooker_period * 20 / COOKER_PERIOD_INC][];
+            tickingQueueIndex = 0;
+            
+            if (tickingQueue.length > 0)
+                maxLoadsPerTick = 1 + (chunks_per_period / tickingQueue.length);
+            else
+                maxLoadsPerTick = 1;
+        }
+        void tickCooker() {
+            TileFlags.TileCoord tc = new TileFlags.TileCoord();
+            // See if any chunks due to be unloaded
+            if (tickingQueue[tickingQueueIndex] != null) {
+                TileFlags.TileCoord[] chunkToUnload = tickingQueue[tickingQueueIndex];
+                tickingQueue[tickingQueueIndex] = null;
+                // Unload the ticking chunks
+                for (TileFlags.TileCoord c : chunkToUnload) {
+                    UseCount cnt = loadedChunks.get(c);
+                    if (cnt != null) {
+                        cnt.isTicking = false;
+                        // Now, decrement all loaded neighbors (and self)
+                        for (tc.x = c.x - 1; tc.x <= c.x + 1; tc.x++) {
+                            for (tc.y = c.y - 1; tc.y <= c.y + 1; tc.y++) {
+                                UseCount ncnt = loadedChunks.get(tc);
+                                if (ncnt != null) {
+                                    ncnt.cnt--; // Drop neighbor count
+                                    if ((ncnt.cnt == 0) && (ncnt.isTicking == false)) { // No neighbors nor ticking
+                                        loadedChunks.remove(tc); // Remove from set
+                                        // And unload it, if its not in use
+                                        if (world.isChunkInUse(tc.x, tc.y) == false) {
+                                            world.unloadChunkRequest(tc.x, tc.y);
+                                        }
                                     }
                                 }
                             }
@@ -91,103 +117,133 @@ public class ChunkCooker extends JavaPlugin {
                     }
                 }
             }
-        }
-        // If iterator is exhausted, done with current world
-        if ((iter != null) && (iter.hasNext() == false)) {
-            iter = null;
-            if (currentWorld != null) {
-                log.info("World '" + currentWorld.getName() + "' - chunk cooking completed");
+            // If iterator is exhausted, done with current world
+            if ((iter != null) && (iter.hasNext() == false)) {
+                iter = null;
+                log.info("World '" + world.getName() + "' - chunk cooking completed");
             }
-            currentWorld = null;
-        }
-        /* If no active world, select next one */
-        if (currentWorld == null) {
-            List<World> w = this.getServer().getWorlds();
-            int wcnt = w.size();
-            for (int i = 0; i < wcnt; i++) {
-                int idx = worldIndex % wcnt;
-                worldIndex++;
-                currentWorld = w.get(idx);
-                if (currentWorld.getEnvironment() == World.Environment.NORMAL) {
-                    stormset = false;
-                    break;
-                }
-                currentWorld = null;
+            if (iter == null) {
+                // Now, get current chunk map for world
+                int ccnt = getChunkMap(world, chunkmap);
+                log.info("Starting cook pass for world '" + world.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
+                        (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0 + " hrs)");
+                iter = chunkmap.getIterator();  // Get iterator
             }
-            // If no world selected, no normal worlds right now
-            if (currentWorld == null) {
-                return;
-            }
-            // Now, get current chunk map for world
-            int ccnt = getChunkMap(currentWorld, chunkmap);
-            log.info("Starting cook pass for world '" + currentWorld.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
-                    (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0 + " hrs)");
-            iter = chunkmap.getIterator();  // Get iterator
-        }
-        // Now, load next N chunks (and their neighbors)
-        ArrayList<TileFlags.TileCoord> newticking = null;
-        int newloads = 0;
-        while(iter.hasNext() && (loadedChunks.size() < chunks_per_period) && (newloads < maxLoadsPerTick)) {
-            iter.next(tc);
-            chunkmap.setFlag(tc.x,  tc.y, false);
-            int x0 = tc.x;
-            int z0 = tc.y;
-            // Try to load chunk, and its 8 neighbors
-            for (tc.x = x0 - 1; tc.x <= x0 + 1; tc.x++) {
-                for (tc.y = z0 - 1; tc.y <= z0 + 1; tc.y++) {
-                    UseCount cnt = loadedChunks.get(tc);    // See if loaded
-                    if (cnt == null) {  // Not yet, load it */
-                        if (currentWorld.loadChunk(tc.x, tc.y, false)) {
-                            cnt = new UseCount();
-                            loadedChunks.put(new TileFlags.TileCoord(tc.x, tc.y), cnt);
+            // Now, load next N chunks (and their neighbors)
+            ArrayList<TileFlags.TileCoord> newticking = null;
+            int newloads = 0;
+            while(iter.hasNext() && (loadedChunks.size() < chunks_per_period) && (newloads < maxLoadsPerTick)) {
+                iter.next(tc);
+                chunkmap.setFlag(tc.x,  tc.y, false);
+                int x0 = tc.x;
+                int z0 = tc.y;
+                // Try to load chunk, and its 8 neighbors
+                for (tc.x = x0 - 1; tc.x <= x0 + 1; tc.x++) {
+                    for (tc.y = z0 - 1; tc.y <= z0 + 1; tc.y++) {
+                        UseCount cnt = loadedChunks.get(tc);    // See if loaded
+                        if (cnt == null) {  // Not yet, load it */
+                            if (world.loadChunk(tc.x, tc.y, false)) {
+                                cnt = new UseCount();
+                                loadedChunks.put(new TileFlags.TileCoord(tc.x, tc.y), cnt);
+                            }
+                            newloads++;
                         }
-                        newloads++;
-                    }
-                    if (cnt != null) {
-                        cnt.cnt++;  // Bump count
-                        if ((tc.x == x0) && (tc.y == z0)) { // If the ticking chunk, set it
-                            cnt.isTicking = true;
-                            if (newticking == null)
-                                newticking = new ArrayList<TileFlags.TileCoord>();
-                            newticking.add(new TileFlags.TileCoord(tc.x, tc.y));
+                        if (cnt != null) {
+                            cnt.cnt++;  // Bump count
+                            if ((tc.x == x0) && (tc.y == z0)) { // If the ticking chunk, set it
+                                cnt.isTicking = true;
+                                if (newticking == null)
+                                    newticking = new ArrayList<TileFlags.TileCoord>();
+                                newticking.add(new TileFlags.TileCoord(tc.x, tc.y));
+                            }
                         }
                     }
                 }
             }
-        }
-        // Add new ticking chunks to queue
-        if (newticking != null) {
-            tickingQueue[tickingQueueIndex] = newticking.toArray(new TileFlags.TileCoord[0]);
-        }
-        else {
-            tickingQueue[tickingQueueIndex] = null;
-        }
-        // Increment to next index
-        tickingQueueIndex++;
-        if (tickingQueueIndex >= tickingQueue.length) {
-            tickingQueueIndex = 0;
-        }
-        
-        if (storm_on_empty) {
-            if (currentWorld.getPlayers().isEmpty()) { // If world is empty
-                if (currentWorld.hasStorm() == false) {
-                    currentWorld.setStorm(true);
-                    stormset = true;
-                    if(verbose)
-                        log.info("Setting storm on empty world '" + currentWorld.getName() + "'");
-                }
+            // Add new ticking chunks to queue
+            if (newticking != null) {
+                tickingQueue[tickingQueueIndex] = newticking.toArray(new TileFlags.TileCoord[0]);
             }
             else {
-                if (stormset) {
-                    currentWorld.setStorm(false);
-                    stormset = false;
+                tickingQueue[tickingQueueIndex] = null;
+            }
+            // Increment to next index
+            tickingQueueIndex++;
+            if (tickingQueueIndex >= tickingQueue.length) {
+                tickingQueueIndex = 0;
+            }
+            
+            if (storm_on_empty) {
+                if (world.getPlayers().isEmpty()) { // If world is empty
+                    if (world.hasStorm() == false) {
+                        world.setStorm(true);
+                        stormset = true;
+                        if(verbose)
+                            log.info("Setting storm on empty world '" + world.getName() + "'");
+                    }
+                }
+                else {
+                    if (stormset) {
+                        world.setStorm(false);
+                        stormset = false;
+                    }
                 }
             }
+        }
+        private void putChunkTickList() {
+            Exception xx = null;
+            try {
+                if ((chunkTickList != null) && (world != null)) {
+                    Object w = cw_gethandle.invoke(world);
+                    Object lst = chunkTickList.get(w);
+                    if (lst != null) {
+                        for (TileFlags.TileCoord[] ticklist : this.tickingQueue) {
+                            if (ticklist == null) continue;
+                            for (TileFlags.TileCoord tc : ticklist) {
+                                int x = tc.x;
+                                int z = tc.y;
+                                if (isSpigotStyleChunkTickList) {
+                                    Long k = ((((long)x) & 0xFFFF0000L) << 16) | ((((long)x) & 0x0000FFFFL) << 0);
+                                    k |= ((((long)z) & 0xFFFF0000L) << 32) | ((((long)z) & 0x0000FFFFL) << 16);
+                                    chunkTickListPut.invoke(lst, k, Short.valueOf((short)-1));
+                                }
+                                else {
+                                    Long v = ((long) x << 32) + z - Integer.MIN_VALUE;
+                                    chunkTickListPut.invoke(lst, v);
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        log.info("No chunkTickQueue");
+                        chunkTickList = null;
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                xx = e;
+            } catch (IllegalAccessException e) {
+                xx = e;
+            } catch (InvocationTargetException e) {
+                xx = e;
+            }
+            if (xx != null) {
+                log.log(Level.INFO,  "Cannot send ticks", xx);
+                chunkTickList = null;
+            }
+        }
+        public void cleanup() {
+            iter = null;
+            loadedChunks.clear();
         }
     }
     
+    private ArrayList<WorldHandler> worlds = new ArrayList<WorldHandler>();
+    
+    
     private void tickChunks() {
-        putChunkTickList();
+        for (WorldHandler wh : worlds) {
+            wh.putChunkTickList();
+        }
     }
     
     private String getNMSPackage() {
@@ -251,46 +307,14 @@ public class ChunkCooker extends JavaPlugin {
             }
         }
     }
-    private void putChunkTickList() {
-        Exception xx = null;
-        try {
-            if ((chunkTickList != null) && (currentWorld != null)) {
-                Object w = cw_gethandle.invoke(currentWorld);
-                Object lst = chunkTickList.get(w);
-                if (lst != null) {
-                    for (TileFlags.TileCoord[] ticklist : this.tickingQueue) {
-                        if (ticklist == null) continue;
-                        for (TileFlags.TileCoord tc : ticklist) {
-                            int x = tc.x;
-                            int z = tc.y;
-                            if (isSpigotStyleChunkTickList) {
-                                Long k = ((((long)x) & 0xFFFF0000L) << 16) | ((((long)x) & 0x0000FFFFL) << 0);
-                                k |= ((((long)z) & 0xFFFF0000L) << 32) | ((((long)z) & 0x0000FFFFL) << 16);
-                                chunkTickListPut.invoke(lst, k, Short.valueOf((short)-1));
-                            }
-                            else {
-                                Long v = ((long) x << 32) + z - Integer.MIN_VALUE;
-                                chunkTickListPut.invoke(lst, v);
-                            }
-                        }
-                    }
-                }
-                else {
-                    log.info("No chunkTickQueue");
-                    chunkTickList = null;
-                }
+    
+    public WorldHandler findWorldHandler(World w) {
+        for (WorldHandler wh : worlds) {
+            if (wh.world == w) {
+                return wh;
             }
-        } catch (IllegalArgumentException e) {
-            xx = e;
-        } catch (IllegalAccessException e) {
-            xx = e;
-        } catch (InvocationTargetException e) {
-            xx = e;
         }
-        if (xx != null) {
-            log.log(Level.INFO,  "Cannot send ticks", xx);
-            chunkTickList = null;
-        }
+        return null;
     }
 
     /* On disable, stop doing our function */
@@ -306,29 +330,33 @@ public class ChunkCooker extends JavaPlugin {
         FileConfiguration cfg = getConfig();
         cfg.options().copyDefaults(true);   /* Load defaults, if needed */
         this.saveConfig();  /* Save updates, if needed */
+
+        worldenv = new ArrayList<World.Environment>();
+        List<String> we = cfg.getStringList("world-env");
+        if (we != null) {
+            for (String env : we) {
+                World.Environment envval = World.Environment.valueOf(env);
+                if (envval != null) {
+                    worldenv.add(envval);
+                }
+            }
+        }
+        else {
+            worldenv.add(World.Environment.NORMAL);
+        }
         
-        chunks_per_period = cfg.getInt("chunks-per-period", 100);
-        if (chunks_per_period < 1) chunks_per_period = 1;
-        cooker_period = cfg.getInt("seconds-per-period", 30);
-        if(cooker_period < 5) cooker_period = 5;
-        storm_on_empty = cfg.getBoolean("storm-on-empty-world", true);
         chunk_tick_interval = cfg.getInt("chunk-tick-interval", 1);
         verbose = cfg.getBoolean("verbose", false);
-        if (verbose)
-            log.setLevel(Level.FINE);
         // See if we can tick chunk fields
         if (chunk_tick_interval > 0) {
             findChunkTickListFields();
         }
-        // Initialize chunk queue : enough buckets for giving chunks enough time
-        tickingQueue = new TileFlags.TileCoord[cooker_period * 20 / COOKER_PERIOD_INC][];
-        tickingQueueIndex = 0;
-        
-        maxLoadsPerTick = 1 + (chunks_per_period / tickingQueue.length);
         
         this.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
             public void run() {
-                tickCooker();
+                for (int i = 0; i < worlds.size(); i++) {
+                    worlds.get(i).tickCooker();
+                }
             }
         }, COOKER_PERIOD_INC, COOKER_PERIOD_INC);
 
@@ -340,14 +368,23 @@ public class ChunkCooker extends JavaPlugin {
             }, chunk_tick_interval, chunk_tick_interval);
         }
         
+        // Initialize worlds
+        for (World w : this.getServer().getWorlds()) {
+            if (worldenv.contains(w.getEnvironment())) {
+                WorldHandler wh = new WorldHandler(ChunkCooker.this.getConfig(), w);
+                worlds.add(wh);
+            }
+        }
+        // Load listener
         Listener pl = new Listener() {
             @EventHandler(priority=EventPriority.NORMAL)
             public void onChunkUnload(ChunkUnloadEvent evt) {
                 if(evt.isCancelled()) return;
                 Chunk c = evt.getChunk();
-                if(c.getWorld() == currentWorld) {
+                WorldHandler wh = findWorldHandler(c.getWorld()) ;
+                if(wh != null) {
                     TileFlags.TileCoord tc = new TileFlags.TileCoord(c.getX(), c.getZ());
-                    if (loadedChunks.containsKey(tc)) { // If loaded, cancel unload
+                    if (wh.loadedChunks.containsKey(tc)) { // If loaded, cancel unload
                         evt.setCancelled(true);
                     }
                 }
@@ -355,12 +392,23 @@ public class ChunkCooker extends JavaPlugin {
             @EventHandler(priority=EventPriority.MONITOR)
             public void onWorldUnload(WorldUnloadEvent evt) {
                 if (evt.isCancelled()) return;
-                if (evt.getWorld() == currentWorld) {
-                    log.info("World '" + currentWorld.getName() + "' unloaded - chunk cooking cancelled");
-                    currentWorld = null;
-                    iter = null;
-                    loadedChunks.clear();
-                    chunkmap.clear();
+                WorldHandler wh = findWorldHandler(evt.getWorld());
+                if (wh != null) {
+                    worlds.remove(wh);
+                    log.info("World '" + wh.world.getName() + "' unloaded - chunk cooking cancelled");
+                    wh.cleanup();
+                }
+            }
+            @EventHandler(priority=EventPriority.MONITOR)
+            public void onWorldLoad(WorldLoadEvent evt) {
+                World w = evt.getWorld();
+                if (worldenv.contains(w.getEnvironment()) == false) {
+                    return;
+                }
+                WorldHandler wh = findWorldHandler(w);
+                if (wh == null) {
+                    wh = new WorldHandler(ChunkCooker.this.getConfig(), w);
+                    worlds.add(wh);
                 }
             }
         };
