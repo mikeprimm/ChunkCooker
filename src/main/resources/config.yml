@@ -2,6 +2,7 @@
 #
 chunks-per-period: 100
 seconds-per-period: 30
+minimum-cycle-time: 3600
 storm-on-empty-world: true
 world-env: [ NORMAL ]
 chunk-tick-interval: 1
@@ -12,4 +13,5 @@ worlds:
     chunks-per-period: 100
     seconds-per-period: 30
     storm-on-empty-world: true
+    minimum-cycle-time: 3600
      

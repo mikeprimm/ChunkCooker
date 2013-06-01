@@ -55,10 +55,13 @@ public class ChunkCooker extends JavaPlugin {
         private final int chunks_per_period;
         private final boolean storm_on_empty;
         private final int maxLoadsPerTick;
+        private final int minCycleTime;
 
         private final HashMap<TileFlags.TileCoord, UseCount> loadedChunks = new HashMap<TileFlags.TileCoord, UseCount>();
         private final TileFlags.TileCoord[][] tickingQueue;
         private int tickingQueueIndex;
+        private long cycleStart;
+        private int endIndex;
         
         private final TileFlags chunkmap = new TileFlags();
         private TileFlags.Iterator iter;
@@ -66,18 +69,21 @@ public class ChunkCooker extends JavaPlugin {
 
         WorldHandler(FileConfiguration cfg, World w) {
             world = w;
-            ConfigurationSection sec = cfg.getConfigurationSection(w.getName());
+            ConfigurationSection sec = cfg.getConfigurationSection("worlds." + w.getName());
             int cpp = cfg.getInt("chunks-per-period", 100);
             int cp = cfg.getInt("seconds-per-period", 30);
             boolean soe = cfg.getBoolean("storm-on-empty-world", true);
+            int mincycle = cfg.getInt("minimum-cycle-time", 3600);
             if (sec != null) {
                 cpp = sec.getInt("chunks-per-period", cpp);
-                cp = cfg.getInt("seconds-per-period", cp);
-                soe = cfg.getBoolean("storm-on-empty-world", soe);
+                cp = sec.getInt("seconds-per-period", cp);
+                soe = sec.getBoolean("storm-on-empty-world", soe);
+                mincycle = sec.getInt("minimum-cycle-time", mincycle);
             }
             chunks_per_period = cpp;
             cooker_period = cp;
             storm_on_empty = soe;
+            minCycleTime = mincycle;
             // Initialize chunk queue : enough buckets for giving chunks enough time
             tickingQueue = new TileFlags.TileCoord[cooker_period * 20 / COOKER_PERIOD_INC][];
             tickingQueueIndex = 0;
@@ -86,6 +92,8 @@ public class ChunkCooker extends JavaPlugin {
                 maxLoadsPerTick = 1 + (chunks_per_period / tickingQueue.length);
             else
                 maxLoadsPerTick = 1;
+            cycleStart = 0;
+            log.info("World '" + w.getName() + "': chunks=" + chunks_per_period + ", period=" + cooker_period + ", storm=" + storm_on_empty + ", mintime=" + minCycleTime);
         }
         void tickCooker() {
             TileFlags.TileCoord tc = new TileFlags.TileCoord();
@@ -117,17 +125,25 @@ public class ChunkCooker extends JavaPlugin {
                     }
                 }
             }
-            // If iterator is exhausted, done with current world
-            if ((iter != null) && (iter.hasNext() == false)) {
-                iter = null;
-                log.info("World '" + world.getName() + "' - chunk cooking completed");
-            }
             if (iter == null) {
-                // Now, get current chunk map for world
-                int ccnt = getChunkMap(world, chunkmap);
-                log.info("Starting cook pass for world '" + world.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
+                if (tickingQueueIndex != endIndex) {
+                    return;
+                }
+                if (cycleStart != 0) {
+                    log.info("World '" + world.getName() + "' - chunk cooking completed");
+                }
+                // If first cycle, or we're due for next cycle
+                if ((cycleStart == 0) || (((System.nanoTime() - cycleStart) / 1000000000L) > minCycleTime)) {
+                    // Now, get current chunk map for world
+                    int ccnt = getChunkMap(world, chunkmap);
+                    log.info("Starting cook pass for world '" + world.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
                         (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0 + " hrs)");
-                iter = chunkmap.getIterator();  // Get iterator
+                    iter = chunkmap.getIterator();  // Get iterator
+                    cycleStart = System.nanoTime();
+                }
+                else {
+                    return;
+                }
             }
             // Now, load next N chunks (and their neighbors)
             ArrayList<TileFlags.TileCoord> newticking = null;
@@ -166,6 +182,11 @@ public class ChunkCooker extends JavaPlugin {
             }
             else {
                 tickingQueue[tickingQueueIndex] = null;
+            }
+            // If iterator is exhausted, done with current world
+            if ((iter != null) && (iter.hasNext() == false)) {
+                iter = null;
+                endIndex = tickingQueueIndex;
             }
             // Increment to next index
             tickingQueueIndex++;
@@ -325,7 +346,7 @@ public class ChunkCooker extends JavaPlugin {
     public void onEnable() {
         log = this.getLogger();
         
-        log.info("ChunkCooker loaded");
+        log.info("ChunkCooker v" + this.getDescription().getVersion() + " loaded");
         
         FileConfiguration cfg = getConfig();
         cfg.options().copyDefaults(true);   /* Load defaults, if needed */
