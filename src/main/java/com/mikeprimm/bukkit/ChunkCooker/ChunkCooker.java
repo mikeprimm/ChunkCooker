@@ -125,21 +125,22 @@ public class ChunkCooker extends JavaPlugin {
                     }
                 }
             }
+            if ((iter != null) && (iter.hasNext() == false) && (tickingQueueIndex == endIndex)) { // Are we done with world?
+                log.info("World '" + world.getName() + "' - chunk cooking completed");
+                iter = null;
+                endIndex = -1;
+            }
             if (iter == null) {
-                if (tickingQueueIndex != endIndex) {
-                    return;
-                }
-                if (cycleStart != 0) {
-                    log.info("World '" + world.getName() + "' - chunk cooking completed");
-                }
                 // If first cycle, or we're due for next cycle
                 if ((cycleStart == 0) || (((System.nanoTime() - cycleStart) / 1000000000L) > minCycleTime)) {
                     // Now, get current chunk map for world
                     int ccnt = getChunkMap(world, chunkmap);
-                    log.info("Starting cook pass for world '" + world.getName() + "' - " + ccnt + " existing chunks (estimated time: " +
-                        (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0 + " hrs)");
+                    log.info(String.format("Starting cook pass for world '%s' - %d existing chunks (estimated time: %.2f hrs, minimum period: %.2f hrs)",
+                            world.getName(), ccnt, (double)(ccnt * cooker_period * 3.0) / (double)chunks_per_period / 3600.0,
+                            (double) minCycleTime / 3600.0));
                     iter = chunkmap.getIterator();  // Get iterator
                     cycleStart = System.nanoTime();
+                    endIndex = -1;
                 }
                 else {
                     return;
@@ -184,8 +185,8 @@ public class ChunkCooker extends JavaPlugin {
                 tickingQueue[tickingQueueIndex] = null;
             }
             // If iterator is exhausted, done with current world
-            if ((iter != null) && (iter.hasNext() == false)) {
-                iter = null;
+            if ((iter != null) && (iter.hasNext() == false) && (endIndex == -1)) {
+                log.info("World '" + world.getName() + "' done - finising pending chunks");
                 endIndex = tickingQueueIndex;
             }
             // Increment to next index
