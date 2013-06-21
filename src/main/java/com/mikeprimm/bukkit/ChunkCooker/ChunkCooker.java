@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -60,6 +61,7 @@ public class ChunkCooker extends JavaPlugin {
         private final HashMap<TileFlags.TileCoord, UseCount> loadedChunks = new HashMap<TileFlags.TileCoord, UseCount>();
         private final TileFlags.TileCoord[][] tickingQueue;
         private int tickingQueueIndex;
+        private int tickingCnt;
         private long cycleStart;
         private int endIndex;
         
@@ -95,12 +97,28 @@ public class ChunkCooker extends JavaPlugin {
             cycleStart = 0;
             log.info("World '" + w.getName() + "': chunks=" + chunks_per_period + ", period=" + cooker_period + ", storm=" + storm_on_empty + ", mintime=" + minCycleTime);
         }
+        void dump() {
+            log.info("tickingQueueIndex=" + tickingQueueIndex + ", tickingCnt=" + tickingCnt + ",loaded.size=" + loadedChunks.size());
+            for(int i = 0; i < tickingQueue.length; i++) {
+                log.info("queue[" + i + "]=" + ((tickingQueue[i] != null)?tickingQueue[i].length:-1));
+                if (tickingQueue[i] != null) {
+                    for (int j = 0; j < tickingQueue[i].length; j++) {
+                        log.info(" <" + tickingQueue[i][j].x + "," + tickingQueue[i][j].y + ">");
+                    }
+                }
+            }
+            for (TileFlags.TileCoord k : loadedChunks.keySet()) {
+                UseCount uc = loadedChunks.get(k);
+                log.info("<" + k.x + "," + k.y + ">: cnt=" + uc.cnt + ", ticking=" + uc.isTicking);
+            }
+        }
         void tickCooker() {
             TileFlags.TileCoord tc = new TileFlags.TileCoord();
             // See if any chunks due to be unloaded
             if (tickingQueue[tickingQueueIndex] != null) {
                 TileFlags.TileCoord[] chunkToUnload = tickingQueue[tickingQueueIndex];
                 tickingQueue[tickingQueueIndex] = null;
+                tickingCnt -= chunkToUnload.length;
                 // Unload the ticking chunks
                 for (TileFlags.TileCoord c : chunkToUnload) {
                     UseCount cnt = loadedChunks.get(c);
@@ -126,7 +144,7 @@ public class ChunkCooker extends JavaPlugin {
                 }
             }
             if ((iter != null) && (iter.hasNext() == false) && (tickingQueueIndex == endIndex)) { // Are we done with world?
-                log.info("World '" + world.getName() + "' - chunk cooking completed");
+                log.info("World '" + world.getName() + "' - chunk cooking completed: loaded=" + loadedChunks.size() + ",ticking=" + tickingCnt);
                 iter = null;
                 endIndex = -1;
             }
@@ -149,7 +167,7 @@ public class ChunkCooker extends JavaPlugin {
             // Now, load next N chunks (and their neighbors)
             ArrayList<TileFlags.TileCoord> newticking = null;
             int newloads = 0;
-            while(iter.hasNext() && (loadedChunks.size() < chunks_per_period) && (newloads < maxLoadsPerTick)) {
+            while(iter.hasNext() && (tickingCnt < chunks_per_period) && (newloads < maxLoadsPerTick)) {
                 iter.next(tc);
                 chunkmap.setFlag(tc.x,  tc.y, false);
                 int x0 = tc.x;
@@ -162,8 +180,8 @@ public class ChunkCooker extends JavaPlugin {
                             if (world.loadChunk(tc.x, tc.y, false)) {
                                 cnt = new UseCount();
                                 loadedChunks.put(new TileFlags.TileCoord(tc.x, tc.y), cnt);
+                                newloads++;
                             }
-                            newloads++;
                         }
                         if (cnt != null) {
                             cnt.cnt++;  // Bump count
@@ -180,13 +198,14 @@ public class ChunkCooker extends JavaPlugin {
             // Add new ticking chunks to queue
             if (newticking != null) {
                 tickingQueue[tickingQueueIndex] = newticking.toArray(new TileFlags.TileCoord[0]);
+                tickingCnt += tickingQueue[tickingQueueIndex].length;
             }
             else {
                 tickingQueue[tickingQueueIndex] = null;
             }
             // If iterator is exhausted, done with current world
             if ((iter != null) && (iter.hasNext() == false) && (endIndex == -1)) {
-                log.info("World '" + world.getName() + "' done - finising pending chunks");
+                log.info("World '" + world.getName() + "' done - finising pending chunks (loaded=" + loadedChunks.size() + ",ticking=" + tickingCnt +")");
                 endIndex = tickingQueueIndex;
             }
             // Increment to next index
@@ -439,6 +458,12 @@ public class ChunkCooker extends JavaPlugin {
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String commandLabel, String[] args) {
+        if (commandLabel.equals("ccdump")) {
+            for (WorldHandler wh : worlds) {
+                log.info("World " + wh.world.getName());
+                wh.dump();
+            }
+        }
         return false;
     }
 

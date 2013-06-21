@@ -3,3 +3,6 @@ main: com.mikeprimm.bukkit.ChunkCooker.ChunkCooker
 version: "${project.version}"
 author: mikeprimm
 
+commands:
+  ccdump:
+    description: Dump ChunkCooker state

@@ -1,13 +1,12 @@
 package com.mikeprimm.bukkit.ChunkCooker;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
+
+import org.bukkit.Bukkit;
 
 /**
  * scalable flags primitive - used for keeping track of potentially huge number of tiles
@@ -57,6 +56,7 @@ public class TileFlags {
 	            }
 	            chunkmap.put(rowaddr, row);
 	        } catch (NumberFormatException nfx) {
+	            Bukkit.getLogger().info("parse error - " + nfx);
 	        }
 	    }
 	}
@@ -138,7 +138,6 @@ public class TileFlags {
 	 * @param flags - flags to be ORed with our flags
 	 */
 	public void union(TileFlags flags) {
-	    count = 0;
 	    for(Map.Entry<Long, long[]> es : flags.chunkmap.entrySet()) {
 	        Long k = es.getKey();
 	        long[] f = chunkmap.get(k);
@@ -148,6 +147,7 @@ public class TileFlags {
                 chunkmap.put(k, f);
 	        }
             for(int i = 0; i < f.length; i++) {
+                count -= Long.bitCount(f[i]);
                 f[i] = f[i] | nf[i];
                 count += Long.bitCount(f[i]);
             }
