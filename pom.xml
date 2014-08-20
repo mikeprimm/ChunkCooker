@@ -30,10 +30,10 @@
     <dependency>
       <groupId>org.bukkit</groupId>
       <artifactId>bukkit</artifactId>
-      <version>1.5.2-R0.1</version>
+      <version>1.6.4-R1.0</version>
     </dependency>
   </dependencies>
   <artifactId>ChunkCooker</artifactId>
-  <version>0.1</version>
+  <version>0.2</version>
   <name>ChunkCooker</name>
 </project>
